@@ -71,18 +71,16 @@ class AugmentedMemoryConvTransformerEncoder(ConvTransformerEncoder):
         x = self.embed_scale * x
 
         subsampling_factor = 1.0 * max_seq_len / output_seq_len
-        input_lengths = torch.max(
-            (src_lengths.float() / subsampling_factor).ceil().long(),
-            x.size(0) * src_lengths.new_ones([src_lengths.size(0)]).long(),
-        )
-
+        # input_lengths = torch.max(
+        #     (src_lengths.float() / subsampling_factor).ceil().long(),
+        #     x.size(0) * src_lengths.new_ones([src_lengths.size(0)]).long(),
+        # )
+        input_lengths = x.size(0) * src_lengths.new_ones([src_lengths.size(0)]).long()
         encoder_padding_mask, _ = lengths_to_encoder_padding_mask(
             input_lengths, batch_first=True
         )
-
         # TODO: fix positional embedding
         positions = self.embed_positions(encoder_padding_mask).transpose(0, 1)
-
         x += positions
         x = F.dropout(x, p=self.dropout, training=self.training)
 

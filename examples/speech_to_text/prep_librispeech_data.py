@@ -27,12 +27,12 @@ log = logging.getLogger(__name__)
 
 SPLITS = [
     "train-clean-100",
-    "train-clean-360",
-    "train-other-500",
-    "dev-clean",
-    "dev-other",
+#    "train-clean-360",
+#    "train-other-500",
+#    "dev-clean",
+#    "dev-other",
     "test-clean",
-    "test-other",
+#    "test-other",
 ]
 
 MANIFEST_COLUMNS = ["id", "audio", "n_frames", "tgt_text", "speaker"]

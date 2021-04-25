@@ -53,8 +53,10 @@ class SimulConvTransformerModel(ConvTransformerModel):
         from examples.simultaneous_translation.models.transformer_monotonic_attention import (
             TransformerMonotonicDecoder,
         )
+        from fairseq.models.transformer import TransformerDecoder
 
-        decoder = TransformerMonotonicDecoder(args, tgt_dict, embed_tokens)
+        decoder = TransformerDecoder(args, tgt_dict, embed_tokens)
+        print("COMMON TRANSFORMER DECODER USED")
 
         if getattr(args, "load_pretrained_decoder_from", None):
             decoder = checkpoint_utils.load_pretrained_component_from_model(
