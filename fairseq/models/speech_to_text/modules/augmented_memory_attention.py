@@ -17,8 +17,10 @@ from fairseq.models.speech_to_text.utils import (
     segments_to_sequence,
     sequence_to_segments,
 )
+from fairseq.models.speech_to_text.modules.utils.feature_maps import elu_feature_map
 from fairseq.modules import MultiheadAttention, TransformerEncoderLayer
 from torch import nn, Tensor
+
 
 # ------------------------------------------------------------------------------
 #   AugmentedMemoryConvTransformerEncoder
@@ -61,8 +63,8 @@ class AugmentedMemoryConvTransformerEncoder(ConvTransformerEncoder):
         bsz, max_seq_len, _ = src_tokens.size()
         x = (
             src_tokens.view(bsz, max_seq_len, self.in_channels, self.input_dim)
-            .transpose(1, 2)
-            .contiguous()
+                .transpose(1, 2)
+                .contiguous()
         )
         x = self.conv(x)
         bsz, _, output_seq_len, _ = x.size()
@@ -98,17 +100,17 @@ class AugmentedMemoryConvTransformerEncoder(ConvTransformerEncoder):
             # TODO: Consider mask here
             x = layer(x, states[i])
             states[i]["encoder_states"] = x[
-                self.left_context_after_stride : -self.right_context_after_stride
-            ]
+                                          self.left_context_after_stride: -self.right_context_after_stride
+                                          ]
 
         lengths = (
             (
                 ~encoder_padding_mask[
-                    :, self.left_context_after_stride : -self.right_context_after_stride
-                ]
+                 :, self.left_context_after_stride: -self.right_context_after_stride
+                 ]
             )
-            .sum(dim=1, keepdim=True)
-            .long()
+                .sum(dim=1, keepdim=True)
+                .long()
         )
 
         return states[-1]["encoder_states"], lengths, states
@@ -170,7 +172,8 @@ class AugmentedMemoryTransformerEncoderLayer(TransformerEncoderLayer):
         return x
 
     def build_self_attention(self, embed_dim, args):
-        return AugmentedMemoryMultiheadAttention(
+        module = AugmentedMemoryMultiheadLinearAttention if args.linear else AugmentedMemoryMultiheadAttention
+        return module(
             embed_dim=embed_dim,
             num_heads=args.encoder_attention_heads,
             dropout=args.attention_dropout,
@@ -194,24 +197,24 @@ class AugmentedMemoryMultiheadAttention(MultiheadAttention):
     """
 
     def __init__(
-        self,
-        embed_dim,
-        num_heads,
-        kdim=None,
-        vdim=None,
-        dropout=0.0,
-        bias=True,
-        add_bias_kv=False,
-        add_zero_attn=False,
-        self_attention=False,
-        encoder_decoder_attention=False,
-        q_noise=0.0,
-        qn_block_size=8,
-        tanh_on_mem=False,
-        memory_dim=None,
-        std_scale=0.5,  # 0.5 based on https://arxiv.org/abs/2005.09137
-        max_memory_size=-1,
-        disable_mem_on_mem_attn=True,
+            self,
+            embed_dim,
+            num_heads,
+            kdim=None,
+            vdim=None,
+            dropout=0.0,
+            bias=True,
+            add_bias_kv=False,
+            add_zero_attn=False,
+            self_attention=False,
+            encoder_decoder_attention=False,
+            q_noise=0.0,
+            qn_block_size=8,
+            tanh_on_mem=False,
+            memory_dim=None,
+            std_scale=0.5,  # 0.5 based on https://arxiv.org/abs/2005.09137
+            max_memory_size=-1,
+            disable_mem_on_mem_attn=True,
     ):
         super().__init__(
             embed_dim,
@@ -262,7 +265,7 @@ class AugmentedMemoryMultiheadAttention(MultiheadAttention):
             if self.max_memory_size == 0:
                 memory = memory.new_zeros(1, memory.size(1), self.memory_dim)
             else:
-                memory = memory[-self.max_memory_size :]
+                memory = memory[-self.max_memory_size:]
 
         memory_and_input = torch.cat(memory + [input_and_summary[:-1]], dim=0)
         input_and_sum_query = input_and_summary
@@ -272,21 +275,21 @@ class AugmentedMemoryMultiheadAttention(MultiheadAttention):
         v = self.v_proj(self.v2e(memory_and_input))
 
         q = (
-            q.contiguous()
-            .view(-1, batch_size * self.num_heads, self.head_dim)
-            .transpose(0, 1)
-            * self.scaling
+                q.contiguous()
+                .view(-1, batch_size * self.num_heads, self.head_dim)
+                .transpose(0, 1)
+                * self.scaling
         )
         k = (
             k.contiguous()
-            .view(-1, batch_size * self.num_heads, self.head_dim)
-            .transpose(0, 1)
+                .view(-1, batch_size * self.num_heads, self.head_dim)
+                .transpose(0, 1)
         )
 
         v = (
             v.contiguous()
-            .view(-1, batch_size * self.num_heads, self.head_dim)
-            .transpose(0, 1)
+                .view(-1, batch_size * self.num_heads, self.head_dim)
+                .transpose(0, 1)
         )
 
         attention_weights = torch.bmm(q, k.transpose(1, 2))
@@ -322,8 +325,8 @@ class AugmentedMemoryMultiheadAttention(MultiheadAttention):
 
         attention = (
             attention.transpose(0, 1)
-            .contiguous()
-            .view(length + 1, batch_size, self.embed_dim)
+                .contiguous()
+                .view(length + 1, batch_size, self.embed_dim)
         )
 
         output_and_memory = self.out_proj(attention)
@@ -337,7 +340,155 @@ class AugmentedMemoryMultiheadAttention(MultiheadAttention):
         return output
 
     def suppress_mem_on_mem_attention(
-        self, B: int, num_heads: int, mem_size: int, attention_weight: Tensor
+            self, B: int, num_heads: int, mem_size: int, attention_weight: Tensor
+    ):
+        """
+        Arguments:
+            - B: batch size
+            - num_heads: number of attention heads
+            - mem_size: size of memory bank
+            - attention_weight: a [B*num_heads, T + 1, T + mem_size] vector
+
+        Return:
+            modified attention_weight with [B*num_heads, -1, :mem_size] = -inf
+        """
+        attention_weight[:, -1, :mem_size] = float("-inf")
+        return attention_weight
+
+
+# ------------------------------------------------------------------------------
+#   AugmentedMemoryMultiheadLinearAttention
+# ------------------------------------------------------------------------------
+class AugmentedMemoryMultiheadLinearAttention(MultiheadAttention):
+    """
+    Augmented Memory Attention from
+    Streaming Transformer-based Acoustic Models
+    Using Self-attention with Augmented Memory
+    https://arxiv.org/abs/2005.08042
+    """
+
+    def __init__(
+            self,
+            embed_dim,
+            num_heads,
+            kdim=None,
+            vdim=None,
+            dropout=0.0,
+            bias=True,
+            add_bias_kv=False,
+            add_zero_attn=False,
+            self_attention=False,
+            encoder_decoder_attention=False,
+            q_noise=0.0,
+            qn_block_size=8,
+            tanh_on_mem=False,
+            memory_dim=None,
+            std_scale=0.5,  # 0.5 based on https://arxiv.org/abs/2005.09137
+            max_memory_size=-1,
+            disable_mem_on_mem_attn=True,
+    ):
+        super().__init__(
+            embed_dim,
+            num_heads,
+            kdim,
+            vdim,
+            dropout,
+            bias,
+            add_bias_kv,
+            add_zero_attn,
+            self_attention,
+            encoder_decoder_attention,
+            q_noise,
+            qn_block_size,
+        )
+
+        self.memory_dim = memory_dim if memory_dim is not None else embed_dim
+        self.std_scale = std_scale
+        self.disable_mem_on_mem_attn = disable_mem_on_mem_attn
+
+        # This Operator was used for factorization in PySpeech
+        self.v2e = lambda x: x
+
+        if tanh_on_mem:
+            self.squash_mem = torch.tanh
+            self.nonlinear_squash_mem = True
+        else:
+            self.squash_mem = lambda x: x
+            self.nonlinear_squash_mem = False
+
+        self.max_memory_size = max_memory_size
+
+        self.feature_map = (
+            elu_feature_map(embed_dim)
+        )
+
+    def forward(self, input_and_summary, state):
+        """
+        input: Encoder states of current segment with left or right context,
+            plus one summarization query
+
+        """
+
+        length, batch_size, _ = input_and_summary.shape
+        length = length - 1  # not include sum_query, last index
+
+        memory = state["memory_banks"]
+        # TODO: positional embedding on memory
+
+        if self.max_memory_size > -1 and len(memory) > self.max_memory_size:
+            # TODO: need to fix here
+            if self.max_memory_size == 0:
+                memory = memory.new_zeros(1, memory.size(1), self.memory_dim)
+            else:
+                memory = memory[-self.max_memory_size:]
+
+        memory_and_input = torch.cat(memory + [input_and_summary[:-1]], dim=0)
+        input_and_sum_query = input_and_summary
+
+        Q_segment = self.feature_map.forward_queries(input_and_summary[:-1])
+        Q_summary = self.feature_map.forward_queries(input_and_summary[-1])
+
+        K_full = self.feature_map.forward_keys(memory_and_input)
+        K_segment = self.feature_map.forward_keys(input_and_summary[:-1])
+        #        K = K * key_lengths.float_matrix[:, :, None, None]
+
+        KV_segment = torch.einsum("nshd,nshm->nhmd", K_segment, input_and_summary[:-1])
+        KV_full = torch.einsum("nshd,nshm->nhmd", K_full, memory_and_input)
+
+        # Compute the normalizer
+        Z_full = 1 / (torch.einsum("nlhd,nhd->nlh", Q_segment, KV_full.sum(dim=1)) + self.eps)
+        Z_memory = 1 / (torch.einsum("nlhd,nhd->nlh", Q_summary, KV_segment.sum(dim=1)) + self.eps)
+
+        # Finally compute and return the new values
+        attention = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_segment, KV_full, Z_full)
+        attention_memory = torch.einsum("nlhd,nhmd,nlh->nlhm", Q_summary, KV_segment, Z_memory)
+
+        # return V.contiguous()
+
+        assert list(attention.shape) == [
+            batch_size * self.num_heads,
+            length + 1,
+            self.head_dim,
+        ]
+
+        attention = (
+            attention.transpose(0, 1)
+                .contiguous()
+                .view(length + 1, batch_size, self.embed_dim)
+        )
+
+        output_and_memory = self.out_proj(attention)
+
+        next_m = output_and_memory[-1:]
+        next_m = self.squash_mem(next_m)
+        output = output_and_memory[:-1]
+
+        state["memory_banks"].append(next_m)
+
+        return output
+
+    def suppress_mem_on_mem_attention(
+            self, B: int, num_heads: int, mem_size: int, attention_weight: Tensor
     ):
         """
         Arguments:
@@ -388,10 +539,10 @@ class SequenceEncoder(FairseqEncoder):
         self.right_context = args.right_context
 
     def forward(
-        self,
-        src_tokens: Tensor,
-        src_lengths: Tensor,
-        states=None,
+            self,
+            src_tokens: Tensor,
+            src_lengths: Tensor,
+            states=None,
     ):
 
         seg_src_tokens_lengths = sequence_to_segments(
@@ -435,10 +586,10 @@ class SequenceEncoder(FairseqEncoder):
         }
 
     def incremental_encode(
-        self,
-        seg_src_tokens: Tensor,
-        seg_src_lengths: Tensor,
-        states=None,
+            self,
+            seg_src_tokens: Tensor,
+            seg_src_lengths: Tensor,
+            states=None,
     ):
         """
         Different from forward function, this function takes segmented speech
@@ -450,6 +601,47 @@ class SequenceEncoder(FairseqEncoder):
             states=states,
         )
         return seg_encoder_states, seg_enc_lengths, states
+
+    @torch.jit.export
+    def reorder_encoder_out(self, encoder_out, new_order):
+        """
+        Reorder encoder output according to *new_order*.
+
+        Args:
+            encoder_out: output from the ``forward()`` method
+            new_order (LongTensor): desired order
+
+        Returns:
+            *encoder_out* rearranged according to *new_order*
+        """
+        new_encoder_out = [encoder_out["encoder_out"][0].index_select(1, new_order)]
+        if len(encoder_out["encoder_padding_mask"]) == 0 or \
+                encoder_out["encoder_padding_mask"][0] is None:
+            new_encoder_padding_mask = []
+        else:
+            new_encoder_padding_mask = [
+                (encoder_out["encoder_padding_mask"][0]).index_select(0, new_order)
+            ]
+        if len(encoder_out["encoder_embedding"]) == 0:
+            new_encoder_embedding = []
+        else:
+            new_encoder_embedding = [
+                (encoder_out["encoder_embedding"][0]).index_select(0, new_order)
+            ]
+        encoder_states = encoder_out["encoder_states"][0]
+        if len(encoder_states) > 0:
+            for idx, state in enumerate(encoder_states):
+                encoder_states[idx] = {"memory_banks": [s.index_select(1, new_order) for s in state["memory_banks"]],
+                                       "encoder_states": state["encoder_states"].index_select(1, new_order)}
+
+        return {
+            "encoder_out": new_encoder_out,
+            "encoder_padding_mask": new_encoder_padding_mask,
+            "encoder_embedding": new_encoder_embedding,
+            "encoder_states": [encoder_states],
+            "src_tokens": [],
+            "src_lengths": [],
+        }
 
 
 # ------------------------------------------------------------------------------
